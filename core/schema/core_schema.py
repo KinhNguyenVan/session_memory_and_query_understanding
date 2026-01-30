@@ -66,8 +66,8 @@ class SessionMemory(BaseModel):
 
 class CoreQueryUnderstandingLLMOutput(BaseModel):
     """
-    LLM fills this in one shot. Used to decide: answer now, rewrite, or ask clarifying questions.
-    selected_memory proves we select context instead of dumping full memory.
+    LLM fills this in one shot. final_context is NOT filled by LLM — it is built in code
+    from query (clarified or original), conversation_state, selected_memory, and 5 recent messages.
     """
     is_ambiguous: bool = Field(
         ...,
@@ -85,10 +85,6 @@ class CoreQueryUnderstandingLLMOutput(BaseModel):
         default_factory=list,
         description="Relevant memory snippets selected for this query (from conversation_state, user_context, shared_context, open_threads)"
     )
-    final_context: str = Field(
-        ...,
-        description="Final context for answer step: clarified/original query + conversation_state + selected_memory + recent messages"
-    )
 
 
 class CoreQueryUnderstanding(CoreQueryUnderstandingLLMOutput):
@@ -96,3 +92,7 @@ class CoreQueryUnderstanding(CoreQueryUnderstandingLLMOutput):
     query_id: str = Field(..., description="Unique identifier for this query analysis")
     timestamp: str = Field(default_factory=lambda: datetime.now().isoformat())
     original_query: str = Field(..., description="The user's original query")
+    final_context: str = Field(
+        ...,
+        description="Built in code: USER QUERY (clarified or original) + CONVERSATION STATE + SELECTED MEMORY + 5 RECENT MESSAGES"
+    )

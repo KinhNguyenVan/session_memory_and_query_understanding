@@ -136,9 +136,13 @@ else:
                         final_ctx = qu.get("final_context")
                         if final_ctx:
                             st.write("**Final Context:**")
-                            max_len = 600
+                            max_len = 1500
                             preview = final_ctx[:max_len] + (" ... _[truncated]_" if len(final_ctx) > max_len else "")
-                            st.markdown(f"<div style='white-space: pre-wrap;'>{preview}</div>", unsafe_allow_html=True)
+                            # Insert line breaks before section labels so fields display on separate lines
+                            for label in ("CONVERSATION STATE:", "SELECTED MEMORY:", "RECENT MESSAGES:"):
+                                preview = preview.replace(f" {label}", f"\n{label}\n")
+                            preview = preview.replace("USER QUERY:", "USER QUERY:\n", 1)
+                            st.markdown(f"<div style='white-space: pre-wrap; line-height: 1.2;'>{preview}</div>", unsafe_allow_html=True)
                         if qu.get("clarifying_questions"):
                             st.info("💡 Clarifying Questions:")
                             for q_text in qu["clarifying_questions"]:

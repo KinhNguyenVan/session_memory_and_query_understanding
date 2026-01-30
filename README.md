@@ -8,7 +8,6 @@ A chat assistant backend with **session memory** (conversation summarization) an
 
 ### Prerequisites
 
-- Python 3.8+
 - API key: **Google Gemini** (recommended), OpenAI, or Anthropic
 
 ### Installation
@@ -230,16 +229,7 @@ utils/
 
 ---
 
-## 7. Evaluation Alignment (Rubric)
-
-- **Core features work end-to-end (0–6):** Full pipeline from input → session memory → query understanding → response; CLI and Streamlit demos.
-- **Structured outputs & validation (0–1):** SessionMemory and CoreQueryUnderstanding use Pydantic; LLM output is structured via `generate_structured`.
-- **Code structure & readability (0–2):** Clear separation (core/demos/utils); explicit schemas; type hints and docstrings.
-- **Documentation & test data (0–1):** README covers setup, how to run demos, high-level design, assumptions/limitations; conversation logging (conversation_logger) and at least three conversation logs in test_data demonstrating session memory and ambiguous queries.
-
----
-
-## 8. Quick Reference
+## 7. Quick Reference
 
 | Topic | Details |
 |-------|---------|

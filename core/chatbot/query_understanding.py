@@ -10,7 +10,7 @@ Output: CoreQueryUnderstanding
   - final_context → passed to answer step only
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from ..schema.core_schema import CoreQueryUnderstanding, CoreQueryUnderstandingLLMOutput
@@ -38,6 +38,15 @@ class QueryUnderstandingPipeline:
             session_memory_context=session_memory_context,
         )
 
+        # Build final_context in code so it ALWAYS has: query, conversation_state, selected_memory, 5 recent messages
+        final_context = self._build_final_context(
+            query=query,
+            clarified_query=llm_output.clarified_query,
+            session_memory_context=session_memory_context,
+            selected_memory=llm_output.selected_memory,
+            recent_messages=recent_messages,
+        )
+
         query_id = f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         return CoreQueryUnderstanding(
             query_id=query_id,
@@ -46,7 +55,7 @@ class QueryUnderstandingPipeline:
             clarified_query=llm_output.clarified_query,
             clarifying_questions=llm_output.clarifying_questions,
             selected_memory=llm_output.selected_memory,
-            final_context=llm_output.final_context,
+            final_context=final_context,
         )
 
     def _run_core_llm(
@@ -88,12 +97,8 @@ class QueryUnderstandingPipeline:
             "List 1–3 short questions. Use open_threads and user_context.constraints to avoid redundant questions.\n"
             "4) selected_memory: Select ONLY the memory snippets relevant to this query. Draw from: "
             "conversation_state (short sentence), user_context (constraints/goals), shared_context (facts), "
-            "open_threads (open issues). Return a list of short sentences. Do NOT dump the full memory.\n"
-            "5) final_context: Build the single context string for the answer LLM. Include: "
-            "(a) clarified query if present, else original query; (b) conversation_state; "
-            "(c) selected_memory items; (d) short summary of the 5 recent messages. "
-            "This is the only input the answer step will see.\n\n"
-            "Return ONLY the fields of CoreQueryUnderstandingLLMOutput."
+            "open_threads (open issues). Return a list of short sentences. Do NOT dump the full memory.\n\n"
+            "Return ONLY the fields of CoreQueryUnderstandingLLMOutput (final_context is built in code)."
         )
 
         user_template = (
@@ -113,4 +118,40 @@ class QueryUnderstandingPipeline:
                 "session_memory_json": session_memory_json,
             },
             temperature=0.3,
+        )
+
+    def _build_final_context(
+        self,
+        query: str,
+        clarified_query: Optional[str],
+        session_memory_context: Dict[str, Any],
+        selected_memory: List[str],
+        recent_messages: List[Dict[str, Any]],
+    ) -> str:
+        """
+        Build final_context with exactly 4 parts (required):
+        1. USER QUERY: clarified_query if present, else original query
+        2. CONVERSATION STATE: from session memory
+        3. SELECTED MEMORY: list of snippets (or "None.")
+        4. RECENT MESSAGES: exactly 5 recent messages
+        """
+        query_text = clarified_query if clarified_query else query
+        conversation_state = session_memory_context.get("conversation_state", "") or "(none)"
+        selected_block = "\n".join(f"- {s}" for s in selected_memory) if selected_memory else "None."
+        # Exactly 5 recent messages: take last 5, pad with placeholder if fewer
+        recent_5 = list(recent_messages[-5:])
+        while len(recent_5) < 5:
+            recent_5.insert(0, {"role": "(none)", "content": "(no earlier message)"})
+        recent_lines = []
+        for msg in recent_5:
+            role = msg.get("role", "user")
+            content = (msg.get("content", "") or "")[:400]
+            recent_lines.append(f"{role}: {content}")
+        recent_block = "\n".join(recent_lines)
+
+        return (
+            f"USER QUERY:\n{query_text}\n\n"
+            f"CONVERSATION STATE:\n{conversation_state}\n\n"
+            f"SELECTED MEMORY:\n{selected_block}\n\n"
+            f"RECENT MESSAGES (last 5):\n{recent_block}"
         )
