@@ -1,13 +1,13 @@
 """
 Query Understanding Pipeline
 
-Input: user query + session memory (conversation_state, user_context, shared_context, open_threads) + 5 recent messages
+Input: user query + session memory (if any) + recent messages (up to 20).
 Output: CoreQueryUnderstanding
-  - is_ambiguous → answer now vs rewrite vs ask clarifying questions
-  - clarified_query → rewritten query when memory is enough
-  - clarifying_questions → when memory is not enough
-  - selected_memory → relevant snippets (from memory; not full dump)
-  - final_context → passed to answer step only
+  - is_ambiguous: whether the query is ambiguous in context
+  - clarified_query: ALWAYS required; best-effort clarified/rewritten query (used in final_context)
+  - clarifying_questions: optional follow-up questions (no rigid template; answer step uses clarified_query)
+  - selected_memory: relevant snippets (from memory; not full dump)
+  - final_context: built in code: ORIGINAL QUERY + CLARIFIED QUERY + conversation_state + selected_memory + recent messages
 """
 
 from typing import List, Dict, Any, Optional
@@ -26,11 +26,15 @@ class QueryUnderstandingPipeline:
         self,
         query: str,
         recent_messages: List[Dict[str, Any]],
-        session_memory_context: Dict[str, Any]
+        session_memory_context: Dict[str, Any],
+        has_session_summary: bool = True,
     ) -> CoreQueryUnderstanding:
         """
         Process a user query: detect ambiguity, optionally rewrite,
         select relevant memory, build final_context.
+
+        When has_session_summary: final_context uses 5 recent messages (memory covers the rest).
+        When not: no memory → final_context uses up to 20 recent messages.
         """
         llm_output = self._run_core_llm(
             query=query,
@@ -38,13 +42,14 @@ class QueryUnderstandingPipeline:
             session_memory_context=session_memory_context,
         )
 
-        # Build final_context in code so it ALWAYS has: query, conversation_state, selected_memory, 5 recent messages
+        # Build final_context: 5 recent if we have memory; up to 20 recent if we don't
         final_context = self._build_final_context(
             query=query,
             clarified_query=llm_output.clarified_query,
             session_memory_context=session_memory_context,
             selected_memory=llm_output.selected_memory,
             recent_messages=recent_messages,
+            has_session_summary=has_session_summary,
         )
 
         query_id = f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -64,10 +69,10 @@ class QueryUnderstandingPipeline:
         recent_messages: List[Dict[str, Any]],
         session_memory_context: Dict[str, Any],
     ) -> CoreQueryUnderstandingLLMOutput:
-        """Single LLM call to fill is_ambiguous, clarified_query, clarifying_questions, selected_memory, final_context."""
-        # 5 recent messages (abbreviated for prompt)
+        """Single LLM call to fill is_ambiguous, clarified_query, clarifying_questions, selected_memory."""
+        # Use all recent_messages (up to 20) for the prompt
         convo_lines: List[str] = []
-        for msg in recent_messages[-5:]:
+        for msg in recent_messages:
             role = msg.get("role", "user")
             content = (msg.get("content", "") or "")[:300]
             convo_lines.append(f"{role}: {content}")
@@ -88,16 +93,17 @@ class QueryUnderstandingPipeline:
             "  - user_context: preferences, constraints, goals\n"
             "  - shared_context: facts or assumptions both sides agree on\n"
             "  - open_threads: unresolved topics\n\n"
-            "Your tasks:\n"
+            "Your tasks (all fields required except clarifying_questions):\n\n"
             "1) is_ambiguous: Is the query ambiguous in this context? Use conversation_state, shared_context, "
-            "open_threads to decide. If memory is enough to understand (e.g. 'cái này' = current schema), set false.\n"
-            "2) clarified_query: If you can rewrite the query using memory (e.g. 'schema này có ổn không?' → "
-            "'Is the current session memory schema well-designed?'), put the rewritten query here. Otherwise null.\n"
-            "3) clarifying_questions: Only when is_ambiguous=true AND memory is NOT enough to clarify. "
-            "List 1–3 short questions. Use open_threads and user_context.constraints to avoid redundant questions.\n"
+            "open_threads to decide. If memory is enough to understand (e.g. 'cái này' = current schema), set false.\n\n"
+            "2) clarified_query: REQUIRED. Always output a single clarified/rewritten query.\n"
+            "   - When context is enough: rewrite the query explicitly using that context (e.g. 'DL' in a ML chat → 'deep learning').\n"
+            "   - When context is unclear: give your best-effort interpretation or repeat the original query verbatim.\n"
+            "   Never leave this empty; the answer step always uses this.\n\n"
+            "3) clarifying_questions: Optional. Only when is_ambiguous=true and it would help to list 1–3 short follow-up questions. "
+            "Otherwise return an empty list.\n\n"
             "4) selected_memory: Select ONLY the memory snippets relevant to this query. Draw from: "
-            "conversation_state (short sentence), user_context (constraints/goals), shared_context (facts), "
-            "open_threads (open issues). Return a list of short sentences. Do NOT dump the full memory.\n\n"
+            "conversation_state, user_context, shared_context, open_threads. Return a list of short sentences. Do NOT dump the full memory.\n\n"
             "Return ONLY the fields of CoreQueryUnderstandingLLMOutput (final_context is built in code)."
         )
 
@@ -123,35 +129,51 @@ class QueryUnderstandingPipeline:
     def _build_final_context(
         self,
         query: str,
-        clarified_query: Optional[str],
+        clarified_query: str,
         session_memory_context: Dict[str, Any],
         selected_memory: List[str],
         recent_messages: List[Dict[str, Any]],
+        has_session_summary: bool = True,
     ) -> str:
         """
-        Build final_context with exactly 4 parts (required):
-        1. USER QUERY: clarified_query if present, else original query
-        2. CONVERSATION STATE: from session memory
-        3. SELECTED MEMORY: list of snippets (or "None.")
-        4. RECENT MESSAGES: exactly 5 recent messages
+        Build final_context with exactly 5 parts (required):
+        1. ORIGINAL QUERY: user's raw query
+        2. CLARIFIED QUERY: LLM's best-effort clarified/rewritten query (always present)
+        3. CONVERSATION STATE: from session memory
+        4. SELECTED MEMORY: list of snippets (or "None.")
+        5. RECENT MESSAGES: 5 recent when has_session_summary; up to 20 when no memory.
         """
-        query_text = clarified_query if clarified_query else query
+        original_block = f"ORIGINAL QUERY:\n{query}\n\nCLARIFIED QUERY:\n{clarified_query or query}"
         conversation_state = session_memory_context.get("conversation_state", "") or "(none)"
         selected_block = "\n".join(f"- {s}" for s in selected_memory) if selected_memory else "None."
-        # Exactly 5 recent messages: take last 5, pad with placeholder if fewer
-        recent_5 = list(recent_messages[-5:])
-        while len(recent_5) < 5:
-            recent_5.insert(0, {"role": "(none)", "content": "(no earlier message)"})
+
+        if has_session_summary:
+            # Have memory → use last 5 recent only; pad if fewer
+            recent_slice = list(recent_messages[-5:])
+            while len(recent_slice) < 5:
+                recent_slice.insert(0, {"role": "(none)", "content": "(no earlier message)"})
+            recent_label = "RECENT MESSAGES (last 5)"
+        else:
+            # No memory (under threshold) → use all recent (up to 20), enforce chronological order.
+            # Sort by timestamp so display is always oldest-first even if caller passed wrong order.
+            # Secondary key: original index, so messages without timestamp keep relative order.
+            def _sort_key(item: tuple) -> tuple:
+                i, m = item
+                ts = (m.get("timestamp") or "")[:26]
+                return (ts, i)
+            recent_slice = [m for _, m in sorted(enumerate(recent_messages), key=_sort_key)]
+            recent_label = "RECENT MESSAGES"
+
         recent_lines = []
-        for msg in recent_5:
+        for msg in recent_slice:
             role = msg.get("role", "user")
             content = (msg.get("content", "") or "")[:400]
             recent_lines.append(f"{role}: {content}")
         recent_block = "\n".join(recent_lines)
 
         return (
-            f"USER QUERY:\n{query_text}\n\n"
+            f"{original_block}\n\n"
             f"CONVERSATION STATE:\n{conversation_state}\n\n"
             f"SELECTED MEMORY:\n{selected_block}\n\n"
-            f"RECENT MESSAGES (last 5):\n{recent_block}"
+            f"{recent_label}:\n{recent_block}"
         )

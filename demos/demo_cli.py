@@ -3,22 +3,17 @@ CLI Demo Application
 Demonstrates the chat assistant with session memory and query understanding.
 """
 
-import sys
 import argparse
+import os
+import sys
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.markdown import Markdown
 
-import sys
-import os
-
-# Project root (parent of demos/)
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _PROJECT_ROOT)
-
-# Default: save conversation logs under conversation_logger/cli/ for easy debug
 _DEFAULT_LOG_DIR = os.path.join(_PROJECT_ROOT, "conversation_logger", "cli")
 
 from core import ChatAssistant
@@ -29,19 +24,12 @@ console = Console()
 
 def main():
     """Main CLI demo"""
-    parser = argparse.ArgumentParser(description="Chat Assistant Demo")
-    parser.add_argument(
-        "--provider",
-        type=str,
-        default="gemini",
-        choices=["openai", "anthropic", "gemini", "google"],
-        help="LLM provider"
-    )
+    parser = argparse.ArgumentParser(description="Chat Assistant Demo (Gemini)")
     parser.add_argument(
         "--model",
         type=str,
         default=None,
-        help="Model name (defaults based on provider)"
+        help="Gemini model name (default: gemini-2.0-flash)"
     )
     parser.add_argument(
         "--threshold",
@@ -77,18 +65,18 @@ def main():
     # Initialize assistant
     try:
         assistant = ChatAssistant(
-            llm_provider=args.provider,
+            llm_provider="gemini",
             llm_model=args.model,
             token_threshold=args.threshold,
             use_tokenizer=True,
             keep_recent_after_summary=5,
-            recent_messages_window=20
+            recent_messages_window=20,
         )
     except Exception as e:
         console.print(f"[red]Error initializing assistant: {e}[/red]")
         console.print("\n[bold]Make sure you have:[/bold]")
-        console.print("  1. Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env file")
-        console.print("  2. Installed required packages: pip install -r requirements.txt")
+        console.print("  1. Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env")
+        console.print("  2. Run: pip install -r requirements.txt")
         sys.exit(1)
 
     # Conversation log: default to conversation_logger/cli/ unless --no-log or --log-file overrides
@@ -109,6 +97,10 @@ def main():
     # Load conversation log if provided
     if args.load_log:
         assistant.load_conversation_log(args.load_log)
+    
+    # Seed log file with loaded history so the log = loaded + new messages (same source for 20 recent)
+    if logger and assistant.memory_manager.conversation_history:
+        logger.seed_from_history(assistant.memory_manager.conversation_history)
     
     # Welcome message
     console.print(Panel(

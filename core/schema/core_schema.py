@@ -73,9 +73,9 @@ class CoreQueryUnderstandingLLMOutput(BaseModel):
         ...,
         description="Whether the query is ambiguous in current context"
     )
-    clarified_query: Optional[str] = Field(
-        None,
-        description="Rewritten query when clarification is possible from memory"
+    clarified_query: str = Field(
+        ...,
+        description="Always required. Best-effort clarified/rewritten query using context; use original query verbatim if no disambiguation possible."
     )
     clarifying_questions: List[str] = Field(
         default_factory=list,
@@ -94,5 +94,5 @@ class CoreQueryUnderstanding(CoreQueryUnderstandingLLMOutput):
     original_query: str = Field(..., description="The user's original query")
     final_context: str = Field(
         ...,
-        description="Built in code: USER QUERY (clarified or original) + CONVERSATION STATE + SELECTED MEMORY + 5 RECENT MESSAGES"
+        description="Built in code: ORIGINAL QUERY + CLARIFIED QUERY + CONVERSATION STATE + SELECTED MEMORY + RECENT MESSAGES"
     )

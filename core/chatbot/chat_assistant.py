@@ -1,12 +1,8 @@
 """
-Main Chat Assistant Orchestrator.
+Chat Assistant: session memory + query understanding + answer generation.
 
-Pipeline:
-- Add user message to session memory
-- If needed, summarize recent N messages into a structured summary
-- Use summary + recent M messages to run query understanding
-- If query is still ambiguous and clarifying questions exist → ask user to clarify
-- Otherwise, build augmented context and generate final answer
+Pipeline: user input → (summarize if needed) → query understanding → answer.
+Uses Gemini for all LLM calls.
 """
 
 from __future__ import annotations
@@ -33,7 +29,7 @@ class ChatAssistant:
 
     def __init__(
         self,
-        llm_provider: str = "openai",
+        llm_provider: str = "gemini",
         llm_model: Optional[str] = None,
         token_threshold: int = 1000,
         use_tokenizer: bool = True,
@@ -41,16 +37,13 @@ class ChatAssistant:
         keep_recent_after_summary: int = 5,
     ) -> None:
         """
-        Initialize the chat assistant (Core schema pipeline).
-
         Args:
-            llm_provider: LLM provider name ("openai", "anthropic", "gemini")
-            llm_model: Optional model name (uses provider default if None)
-            token_threshold: Token threshold for summarization
-            use_tokenizer: Whether to use tokenizer for counting
-            recent_messages_window: Number of recent messages to check for threshold (e.g. 20).
-                                   If None, checks all messages.
-            keep_recent_after_summary: Number of recent messages to keep after summarization.
+            llm_provider: Must be "gemini" (Gemini-only).
+            llm_model: Optional Gemini model name (default: gemini-2.0-flash).
+            token_threshold: Token threshold for summarization.
+            use_tokenizer: Use tiktoken for token counting.
+            recent_messages_window: Number of recent messages for threshold (e.g. 20).
+            keep_recent_after_summary: Messages to keep after summarization.
         """
         self.llm_client = LLMClient(provider=llm_provider, model=llm_model)
         self.memory_manager = SessionMemoryManager(
@@ -63,19 +56,15 @@ class ChatAssistant:
 
         console.print("[bold green]Chat Assistant initialized![/bold green]")
         console.print(f"Token threshold: {token_threshold}")
-        console.print(
-            f"LLM Provider: {llm_provider}, Model: {llm_model or 'default'}\n"
-        )
+        console.print(f"Gemini model: {llm_model or 'gemini-2.0-flash'}\n")
 
     # ---------------------------------------------------------------------
     # Main entrypoint
     # ---------------------------------------------------------------------
     def process_user_message(self, user_input: str) -> Dict[str, Any]:
         """
-        Process a user message through the full pipeline.
-
-        Returns:
-            Dict with response, query_understanding, summary info, and context size.
+        Process a user message: summarize if needed, run query understanding, generate answer.
+        Returns dict with response, query_understanding, summary info, context size.
         """
         # IMPORTANT FLOW:
         # 1) First, work only with existing history → decide whether to summarize.
@@ -100,22 +89,26 @@ class ChatAssistant:
             summary_triggered = True
             console.print("[green]✓ Summarization complete![/green]\n")
 
-        # 2) Build recent_messages snapshot that includes the new user_input
-        #    WITHOUT yet mutating the underlying memory manager.
+        # 2) Build recent_messages: last N (e.g. 20) in chronological order (oldest first, newest last).
+        #    Query understanding and final_context rely on this order; do not reverse.
         base_history = list[Dict[str, Any]](self.memory_manager.conversation_history)
         temp_history = base_history + [
             {"role": "user", "content": user_input, "timestamp": datetime.now().isoformat()}
         ]
-        recent_messages = temp_history[-5:] if len(temp_history) > 5 else temp_history
+        window = self.memory_manager.recent_messages_window or 20
+        recent_messages = temp_history[-window:] if len(temp_history) > window else temp_history
 
         # Session memory context is derived from the latest summary only
         session_memory_context = self.memory_manager.get_memory_context()
+        # If we have a summary (already exceeded threshold), final_context uses only 5 recent; else uses full 20 recent
+        has_session_summary = self.memory_manager.current_summary is not None
 
-        # Process query through understanding pipeline
+        # Process query through understanding pipeline (always receives up to 20 recent for LLM)
         query_understanding = self.query_pipeline.process_query(
             query=user_input,
             recent_messages=recent_messages,
             session_memory_context=session_memory_context,
+            has_session_summary=has_session_summary,
         )
 
         # 3) Generate response using augmented context and ambiguity signal
@@ -139,37 +132,23 @@ class ChatAssistant:
     # ---------------------------------------------------------------------
     def _generate_response(self, query_understanding: CoreQueryUnderstanding) -> str:
         """
-        Step 3: Answer / downstream task.
-        Input is final_context only; no need to interpret memory again.
+        Step 3: Answer using final_context only.
+        final_context includes ORIGINAL QUERY + CLARIFIED QUERY + conversation state + selected memory + recent messages.
+        Always generate a natural response (no fixed clarification template).
         """
-        is_ambiguous = query_understanding.is_ambiguous
-        clarifying: List[str] = list(query_understanding.clarifying_questions or [])
-
-        if is_ambiguous and clarifying:
-            intro = (
-                "Câu hỏi hiện tại vẫn hơi mơ hồ so với ngữ cảnh trước đó, "
-                "mình cần bạn làm rõ thêm trước khi trả lời chính xác.\n\n"
-                "Bạn giúp trả lời một vài câu hỏi sau:"
-            )
-            lines = [intro]
-            for i, q in enumerate(clarifying[:3], 1):
-                lines.append(f"{i}. {q}")
-            return "\n".join(lines)
-
-        # Use final_context (query + overview + selected_memory + recent messages)
         context = query_understanding.final_context
-        prompt = f"""You are a helpful AI assistant. Answer based on the context below.
+        prompt = f"""You are a helpful AI assistant. Use the context below to answer.
 
 {context}
 
-Provide a clear, helpful response. If there are mild ambiguities, briefly state your assumption before answering."""
+Respond naturally. Answer based on the CLARIFIED QUERY. If the query was ambiguous and you need more detail, you may briefly ask for clarification in a natural, conversational way—do not use a rigid list or template. Otherwise give a clear, helpful answer."""
 
         response = self.llm_client.generate(
             prompt=prompt,
             temperature=0.5,
             system_prompt=(
                 "You are a helpful, knowledgeable AI assistant. "
-                "Provide clear and accurate responses."
+                "Provide clear, natural responses. Avoid rigid or templated phrasing."
             ),
         )
         return response
@@ -178,8 +157,10 @@ Provide a clear, helpful response. If there are mild ambiguities, briefly state 
     # Loading logs
     # ---------------------------------------------------------------------
     def load_conversation_log(self, log_path: str) -> None:
-        """Load a conversation log from file (JSON or JSONL)."""
+        """Load a conversation log from file (JSON or JSONL). Replaces current conversation history."""
         try:
+            self.memory_manager.conversation_history.clear()
+            self.memory_manager.current_summary = None
             with open(log_path, "r", encoding="utf-8") as f:
                 if log_path.endswith(".jsonl"):
                     # JSONL-like format. Be tolerant of multi-line JSON objects

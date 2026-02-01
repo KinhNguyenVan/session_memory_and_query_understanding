@@ -1,92 +1,65 @@
 """
-Quick validation script to check if setup is correct.
+Validate project setup: Python version, dependencies, GEMINI_API_KEY, test data.
 """
 
-import sys
 import os
+import sys
+
 from dotenv import load_dotenv
 
+
 def check_setup():
-    """Check if the project is set up correctly"""
+    """Check if the project is set up correctly (Gemini-only)."""
     print("Checking project setup...\n")
-    
     issues = []
-    
-    # Check Python version
+
     if sys.version_info < (3, 8):
         issues.append("Python 3.8+ required (current: {}.{})".format(
-            sys.version_info.major, sys.version_info.minor
-        ))
+            sys.version_info.major, sys.version_info.minor))
     else:
-        print("✓ Python version: {}.{}.{}".format(
-            sys.version_info.major, sys.version_info.minor, sys.version_info.micro
-        ))
-    
-    # Check dependencies
-    required_packages = [
-        "openai", "pydantic", "tiktoken", "rich", "dotenv"
-    ]
-    
-    missing_packages = []
-    for package in required_packages:
+        print("✓ Python {}.{}.{}".format(
+            sys.version_info.major, sys.version_info.minor, sys.version_info.micro))
+
+    required = ["pydantic", "tiktoken", "rich", "dotenv", "langchain_google_genai", "langchain_core"]
+    for name in required:
         try:
-            if package == "dotenv":
+            if name == "dotenv":
                 __import__("dotenv")
             else:
-                __import__(package)
-            print(f"✓ {package} installed")
+                __import__(name.replace("-", "_"))
+            print("✓ {} installed".format(name))
         except ImportError:
-            missing_packages.append(package)
-            issues.append(f"Missing package: {package}")
-    
-    # Check environment variables
+            issues.append("Missing package: {}".format(name))
+
     load_dotenv()
-    has_openai = bool(os.getenv("OPENAI_API_KEY"))
-    has_anthropic = bool(os.getenv("ANTHROPIC_API_KEY"))
-    has_gemini = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
-    
-    if has_openai:
-        print("✓ OPENAI_API_KEY found")
-    if has_anthropic:
-        print("✓ ANTHROPIC_API_KEY found")
-    if has_gemini:
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    if api_key:
         print("✓ GEMINI_API_KEY or GOOGLE_API_KEY found")
-    
-    if not has_openai and not has_anthropic and not has_gemini:
-        issues.append("No API key found. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY in .env file")
-    
-    # Check test data
+    else:
+        issues.append("Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env")
+
     test_files = [
         "test_data/conversation_1_long.jsonl",
         "test_data/conversation_2_ambiguous.jsonl",
         "test_data/conversation_3_mixed.jsonl",
-        "test_data/conversation_4_technical.jsonl"
+        "test_data/conversation_4_technical.jsonl",
     ]
-    
-    for test_file in test_files:
-        if os.path.exists(test_file):
-            print(f"✓ {test_file} exists")
+    for path in test_files:
+        if os.path.exists(path):
+            print("✓ {} exists".format(path))
         else:
-            issues.append(f"Missing test file: {test_file}")
-    
-    # Summary
+            issues.append("Missing: {}".format(path))
+
     print("\n" + "=" * 50)
     if issues:
-        print("❌ Setup issues found:")
-        for issue in issues:
-            print(f"  • {issue}")
-        print("\nTo fix:")
-        if missing_packages:
-            print(f"  Run: pip install -r requirements.txt")
-        if not has_openai and not has_anthropic:
-            print("  Create .env file with your API key")
+        print("❌ Setup issues:")
+        for i in issues:
+            print("  • {}".format(i))
+        print("\nFix: pip install -r requirements.txt ; set GEMINI_API_KEY in .env")
         return False
-    else:
-        print("✓ Setup looks good! You're ready to run the demos.")
-        print("\nTry running:")
-        print("  python demo_cli.py --load-log test_data/conversation_1_long.jsonl")
-        print("  python demo_flows.py")
-        return True
+    print("✓ Setup OK. Run: python demos/demo_cli.py")
+    return True
+
 
 if __name__ == "__main__":
     success = check_setup()

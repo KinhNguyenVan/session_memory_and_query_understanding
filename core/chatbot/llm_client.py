@@ -1,8 +1,7 @@
 """
-LLM Client Wrapper (Gemini + LangChain)
+LLM Client (Google Gemini via LangChain).
 
-This project now uses ONLY Google Gemini via LangChain, and uses
-`with_structured_output` wherever structured Pydantic models are needed.
+Uses ChatGoogleGenerativeAI and with_structured_output for Pydantic outputs.
 """
 
 import os
@@ -20,28 +19,23 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class LLMClient:
-    """Unified LLM client interface (Gemini-only)."""
+    """Gemini LLM client for text and structured (Pydantic) generation."""
 
     def __init__(self, provider: str = "gemini", model: Optional[str] = None) -> None:
         """
-        Initialize Gemini client.
-
         Args:
-            provider: Kept for backward compatibility, must be "gemini".
-            model: Gemini model name (default: "gemini-2.0-flash").
+            provider: Must be "gemini" or "google".
+            model: Gemini model name (default: gemini-2.0-flash).
         """
         provider = provider.lower()
         if provider not in {"gemini", "google"}:
-            raise ValueError(
-                f"Only Gemini is supported now. Got provider={provider!r}."
-            )
+            raise ValueError("Only Gemini is supported. Got provider={!r}.".format(provider))
 
         api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         if not api_key:
-            raise ValueError("GOOGLE_API_KEY or GEMINI_API_KEY not found in environment")
+            raise ValueError("Set GEMINI_API_KEY or GOOGLE_API_KEY in .env")
 
         self.model = model or "gemini-2.0-flash"
-        # Base LLM instance (temperature fixed at 0 for stability / structured outputs)
         self._llm = ChatGoogleGenerativeAI(
             model=self.model,
             temperature=0,
@@ -54,11 +48,11 @@ class LLMClient:
     def generate(
         self,
         prompt: str,
-        temperature: float = 0.7,  # kept for API compatibility (currently ignored)
-        max_tokens: Optional[int] = None,  # kept for API compatibility (currently ignored)
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
         system_prompt: Optional[str] = None,
     ) -> str:
-        """Generate free-form text from a prompt."""
+        """Generate free-form text."""
         if system_prompt:
             messages = [
                 SystemMessage(content=system_prompt),
@@ -79,19 +73,9 @@ class LLMClient:
         system_prompt: str,
         user_template: str,
         variables: Optional[Dict[str, Any]] = None,
-        temperature: float = 0.1,  # kept for API compatibility (Gemini temp fixed at init)
+        temperature: float = 0.1,
     ) -> T:
-        """
-        Generate a structured Pydantic object using LangChain's
-        `with_structured_output`.
-
-        Args:
-            model: Pydantic BaseModel subclass describing the output schema.
-            system_prompt: System instructions for the assistant.
-            user_template: Templated user message (used with `.format(**variables)`).
-            variables: Variables for the user template.
-            temperature: Sampling temperature (low = more deterministic).
-        """
+        """Generate a Pydantic object via with_structured_output."""
         variables = variables or {}
 
         prompt = ChatPromptTemplate.from_messages(

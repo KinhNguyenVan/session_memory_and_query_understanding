@@ -3,17 +3,14 @@ Streamlit Demo Application
 Web-based demo of the chat assistant.
 """
 
-import streamlit as st
-import json
-import sys
 import os
+import sys
 from datetime import datetime
 
-# Project root (parent of demos/)
+import streamlit as st
+
 _PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, _PROJECT_ROOT)
-
-# Default: save conversation logs under conversation_logger/streamlit/ for easy debug
 _DEFAULT_LOG_DIR = os.path.join(_PROJECT_ROOT, "conversation_logger", "streamlit")
 
 from core import ChatAssistant
@@ -39,9 +36,7 @@ if "logger" not in st.session_state:
 # Sidebar for configuration
 with st.sidebar:
     st.title("⚙️ Configuration")
-    
-    provider = st.selectbox("LLM Provider", ["openai", "anthropic", "gemini"], index=0)
-    model = st.text_input("Model (optional)", value="", help="Leave empty for default")
+    model = st.text_input("Gemini model (optional)", value="", help="Default: gemini-2.0-flash")
     threshold = st.slider("Token Threshold", 1000, 50000, 10000, 1000)
 
     st.subheader("Conversation Logging")
@@ -54,8 +49,8 @@ with st.sidebar:
     if st.button("Initialize Assistant"):
         try:
             st.session_state.assistant = ChatAssistant(
-                llm_provider=provider,
-                llm_model=model if model else None,
+                llm_provider="gemini",
+                llm_model=model.strip() or None,
                 token_threshold=threshold,
                 use_tokenizer=True,
                 recent_messages_window=20,
@@ -75,30 +70,41 @@ with st.sidebar:
             st.success("Assistant initialized!")
         except Exception as e:
             st.error(f"Error: {e}")
-            st.info("Make sure you have set OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY in .env file")
+            st.info("Set GEMINI_API_KEY (or GOOGLE_API_KEY) in .env")
     
     st.divider()
     
-    # Load conversation log
+    # Load conversation log (only once per file to avoid duplicate history on Streamlit reruns)
+    if "last_loaded_file_id" not in st.session_state:
+        st.session_state.last_loaded_file_id = None
     uploaded_file = st.file_uploader("Load Conversation Log", type=["json", "jsonl"])
     if uploaded_file and st.session_state.assistant:
-        content = uploaded_file.read().decode("utf-8")
-        # Save to temp file with UTF-8 so Unicode (e.g. → in content) does not raise on Windows
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(
-            mode='w', delete=False, suffix='.jsonl', encoding='utf-8'
-        ) as f:
-            f.write(content)
-            temp_path = f.name
-        
-        try:
-            st.session_state.assistant.load_conversation_log(temp_path)
-            st.success("Conversation log loaded!")
-        except Exception as e:
-            st.error(f"Error loading log: {e}")
-        finally:
-            os.unlink(temp_path)
+        file_id = (uploaded_file.name, uploaded_file.size)
+        if st.session_state.last_loaded_file_id != file_id:
+            content = uploaded_file.read().decode("utf-8")
+            import tempfile
+            import os
+            with tempfile.NamedTemporaryFile(
+                mode='w', delete=False, suffix='.jsonl', encoding='utf-8'
+            ) as f:
+                f.write(content)
+                temp_path = f.name
+            try:
+                st.session_state.assistant.load_conversation_log(temp_path)
+                if st.session_state.logger:
+                    st.session_state.logger.seed_from_history(
+                        st.session_state.assistant.memory_manager.conversation_history
+                    )
+                st.session_state.last_loaded_file_id = file_id
+                st.session_state.messages = [
+                    {"role": m.get("role", "user"), "content": m.get("content", "")}
+                    for m in st.session_state.assistant.memory_manager.conversation_history
+                ]
+                st.success("Conversation log loaded!")
+            except Exception as e:
+                st.error(f"Error loading log: {e}")
+            finally:
+                os.unlink(temp_path)
     
     st.divider()
     st.session_state.show_analysis = st.checkbox("Show Query Analysis", value=False)
@@ -110,10 +116,7 @@ st.markdown("Chat assistant with **session memory** and **query understanding**"
 if not st.session_state.assistant:
     st.warning("⚠️ Please initialize the assistant in the sidebar first.")
     st.info("""
-    **Setup Instructions:**
-    1. Create a `.env` file in the project root
-    2. Add your API key: `OPENAI_API_KEY=your_key_here`, `ANTHROPIC_API_KEY=your_key_here`, or `GEMINI_API_KEY=your_key_here`
-    3. Click "Initialize Assistant" in the sidebar
+    **Setup:** Create `.env` with `GEMINI_API_KEY=your_key`, then click **Initialize Assistant** in the sidebar.
     """)
 else:
     # Display chat messages
