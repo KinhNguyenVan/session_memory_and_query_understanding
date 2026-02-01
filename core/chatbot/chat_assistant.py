@@ -137,18 +137,27 @@ class ChatAssistant:
         Always generate a natural response (no fixed clarification template).
         """
         context = query_understanding.final_context
-        prompt = f"""You are a helpful AI assistant. Use the context below to answer.
+        prompt = f"""Use the context below to answer the user.
 
 {context}
 
-Respond naturally. Answer based on the CLARIFIED QUERY. If the query was ambiguous and you need more detail, you may briefly ask for clarification in a natural, conversational way—do not use a rigid list or template. Otherwise give a clear, helpful answer."""
+Answer based on the CLARIFIED QUERY. If CLARIFYING_QUESTIONS are present, use them to ask the user naturally (weave into your reply, no rigid list). If not, give a clear, helpful answer.
+
+CRITICAL: Output ONLY your direct reply to the user. Do NOT include: reasoning, step-by-step analysis, "The user is asking...", "The conversation confirms...", "Since the user...", or any meta-commentary. The user must see only your reply, as if you are speaking to them directly."""
 
         response = self.llm_client.generate(
             prompt=prompt,
             temperature=0.5,
             system_prompt=(
-                "You are a helpful, knowledgeable AI assistant. "
-                "Provide clear, natural responses. Avoid rigid or templated phrasing."
+                """You are a helpful, knowledgeable AI assistant. 
+                Think step-by-step follow up:
+                Before writing your reply, reason STEP BY STEP (you may do this internally):
+                1) What is the user asking? (Use CLARIFIED QUERY and RECENT MESSAGES.)
+                2) What does CONVERSATION STATE and SELECTED MEMORY add?
+                3) If CLARIFYING_QUESTIONS are present (query was ambiguous), how will you ask the user naturally—weave the questions into your reply, do not output a rigid numbered list.
+                4) Then write your final response to the user.
+                Write as if speaking directly to the user. Avoid rigid or templated phrasing.
+                Output ONLY the final reply—no reasoning, no analysis, no meta-commentary."""
             ),
         )
         return response

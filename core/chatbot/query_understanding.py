@@ -7,7 +7,7 @@ Output: CoreQueryUnderstanding
   - clarified_query: ALWAYS required; best-effort clarified/rewritten query (used in final_context)
   - clarifying_questions: optional follow-up questions (no rigid template; answer step uses clarified_query)
   - selected_memory: relevant snippets (from memory; not full dump)
-  - final_context: built in code: ORIGINAL QUERY + CLARIFIED QUERY + conversation_state + selected_memory + recent messages
+  - final_context: built in code: ORIGINAL QUERY + CLARIFIED QUERY + (CLARIFYING_QUESTIONS when ambiguous) + conversation_state + selected_memory + recent messages
 """
 
 from typing import List, Dict, Any, Optional
@@ -42,7 +42,7 @@ class QueryUnderstandingPipeline:
             session_memory_context=session_memory_context,
         )
 
-        # Build final_context: 5 recent if we have memory; up to 20 recent if we don't
+        # Build final_context: includes clarifying_questions when ambiguous (for answer step)
         final_context = self._build_final_context(
             query=query,
             clarified_query=llm_output.clarified_query,
@@ -50,6 +50,8 @@ class QueryUnderstandingPipeline:
             selected_memory=llm_output.selected_memory,
             recent_messages=recent_messages,
             has_session_summary=has_session_summary,
+            clarifying_questions=llm_output.clarifying_questions or [],
+            is_ambiguous=llm_output.is_ambiguous,
         )
 
         query_id = f"query_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
@@ -88,22 +90,22 @@ class QueryUnderstandingPipeline:
 
         system_prompt = (
             "You are a query understanding engine for a conversational assistant.\n\n"
-            "You receive: the current user query, recent conversation turns, and session memory:\n"
-            "  - conversation_state: overall understanding of the conversation\n"
-            "  - user_context: preferences, constraints, goals\n"
-            "  - shared_context: facts or assumptions both sides agree on\n"
-            "  - open_threads: unresolved topics\n\n"
-            "Your tasks (all fields required except clarifying_questions):\n\n"
-            "1) is_ambiguous: Is the query ambiguous in this context? Use conversation_state, shared_context, "
-            "open_threads to decide. If memory is enough to understand (e.g. 'cái này' = current schema), set false.\n\n"
-            "2) clarified_query: REQUIRED. Always output a single clarified/rewritten query.\n"
-            "   - When context is enough: rewrite the query explicitly using that context (e.g. 'DL' in a ML chat → 'deep learning').\n"
-            "   - When context is unclear: give your best-effort interpretation or repeat the original query verbatim.\n"
-            "   Never leave this empty; the answer step always uses this.\n\n"
-            "3) clarifying_questions: Optional. Only when is_ambiguous=true and it would help to list 1–3 short follow-up questions. "
-            "Otherwise return an empty list.\n\n"
-            "4) selected_memory: Select ONLY the memory snippets relevant to this query. Draw from: "
-            "conversation_state, user_context, shared_context, open_threads. Return a list of short sentences. Do NOT dump the full memory.\n\n"
+            "You receive: the current user query, recent conversation turns, and session memory (conversation_state, user_context, shared_context, open_threads).\n\n"
+            "Before filling the output fields, reason STEP BY STEP:\n\n"
+            "STEP 1 – Topic link: Does the query mention or clearly refer to the conversation topic? (e.g. 'pip install', 'Python import errors', 'evaluation metrics', 'that algorithm'). If YES → the query is tied to context; if NO → may be ambiguous.\n\n"
+            "STEP 2 – Number of referents: In the conversation so far, are there TWO OR MORE different things the user could be referring to? (e.g. two algorithms discussed → 'that algorithm' is ambiguous; only one topic like 'Python import error' → single referent, NOT ambiguous). If only ONE topic or referent → not ambiguous.\n\n"
+            "STEP 3 – Sufficiency: Can you answer the question or rewrite it into a clear, answerable form with current context? (e.g. 'What is the pip install command for the package that fixes Python import errors?' in a Python-import-error conversation: you can answer with a general template and note that the exact package name may be needed; context is sufficient → NOT ambiguous). If you can answer or rewrite → not ambiguous.\n\n"
+            "Apply the outcome: If STEP 1 = tied to topic, STEP 2 = single referent (or query already names the topic), STEP 3 = context sufficient → set is_ambiguous=FALSE and clarifying_questions=[].\n"
+            "Set is_ambiguous=TRUE only when: query has no link to topic, OR there are 2+ possible referents and you cannot choose, OR context is truly insufficient to answer or rewrite.\n\n"
+            "Examples:\n"
+            "- Query: 'What is the exact pip install command for the package that fixes Python import errors?' in a conversation about Python import error → topic and intent clear (pip, import errors); one topic; can answer (general command + note about package name) → is_ambiguous=FALSE, clarifying_questions=[].\n"
+            "- Query: 'How do I fix it?' when only 'Python import error' was discussed → single referent ('it' = import error) → is_ambiguous=FALSE.\n"
+            "- Query: 'Which one should I use?' when both Adam and SGD were discussed → two referents → is_ambiguous=TRUE, add clarifying_questions.\n\n"
+            "Your tasks:\n\n"
+            "1) is_ambiguous: Result of the step-by-step reasoning above. FALSE when topic is clear, single referent, and context sufficient to answer or rewrite.\n\n"
+            "2) clarified_query: REQUIRED. One clarified/rewritten query. When context is enough, rewrite with that context; when already specific, use same or slight refinement. Never leave empty.\n\n"
+            "3) clarifying_questions: Only when is_ambiguous=TRUE (e.g. multiple referents). When is_ambiguous=FALSE, return an empty list [].\n\n"
+            "4) selected_memory: Relevant snippets from conversation_state, user_context, shared_context, open_threads. Short sentences; do NOT dump full memory.\n\n"
             "Return ONLY the fields of CoreQueryUnderstandingLLMOutput (final_context is built in code)."
         )
 
@@ -134,16 +136,19 @@ class QueryUnderstandingPipeline:
         selected_memory: List[str],
         recent_messages: List[Dict[str, Any]],
         has_session_summary: bool = True,
+        clarifying_questions: Optional[List[str]] = None,
+        is_ambiguous: bool = False,
     ) -> str:
         """
-        Build final_context with exactly 5 parts (required):
-        1. ORIGINAL QUERY: user's raw query
-        2. CLARIFIED QUERY: LLM's best-effort clarified/rewritten query (always present)
-        3. CONVERSATION STATE: from session memory
-        4. SELECTED MEMORY: list of snippets (or "None.")
-        5. RECENT MESSAGES: 5 recent when has_session_summary; up to 20 when no memory.
+        Build final_context: ORIGINAL QUERY, CLARIFIED QUERY, (optional CLARIFYING_QUESTIONS when ambiguous),
+        CONVERSATION STATE, SELECTED MEMORY, RECENT MESSAGES.
+        When is_ambiguous and clarifying_questions are present, include them so the answer step can use them.
         """
+        clarifying_questions = clarifying_questions or []
         original_block = f"ORIGINAL QUERY:\n{query}\n\nCLARIFIED QUERY:\n{clarified_query or query}"
+        if is_ambiguous and clarifying_questions:
+            q_block = "\n".join(f"- {q}" for q in clarifying_questions)
+            original_block += f"\n\nCLARIFYING_QUESTIONS (query was ambiguous; use these to ask the user naturally, not as a rigid list):\n{q_block}"
         conversation_state = session_memory_context.get("conversation_state", "") or "(none)"
         selected_block = "\n".join(f"- {s}" for s in selected_memory) if selected_memory else "None."
 

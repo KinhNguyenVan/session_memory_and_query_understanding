@@ -28,7 +28,7 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default=None,
+        default="gemini-2.5-flash-lite",
         help="Gemini model name (default: gemini-2.0-flash)"
     )
     parser.add_argument(
@@ -41,18 +41,13 @@ def main():
         "--log-file",
         type=str,
         default=None,
-        help="Path to JSONL log file or directory for saving the conversation (default: conversation_logger/cli/)"
-    )
-    parser.add_argument(
-        "--no-log",
-        action="store_true",
-        help="Do not save conversation log (disable default logging to conversation_logger/cli/)"
+        help="Custom path for session log file or directory (default: conversation_logger/cli/cli_YYYYMMDD_HHMMSS.jsonl)"
     )
     parser.add_argument(
         "--load-log",
         type=str,
         default=None,
-        help="Path to conversation log to load"
+        help="Load a specific file (e.g. test_data/foo.jsonl) instead of continuing from session log"
     )
     parser.add_argument(
         "--verbose",
@@ -79,27 +74,21 @@ def main():
         console.print("  2. Run: pip install -r requirements.txt")
         sys.exit(1)
 
-    # Conversation log: default to conversation_logger/cli/ unless --no-log or --log-file overrides
-    logger = None
-    if not args.no_log:
-        if args.log_file:
-            log_path = os.path.abspath(args.log_file)
-            if os.path.isdir(log_path):
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                log_path = os.path.join(log_path, f"cli_conversation_{ts}.jsonl")
-        else:
-            os.makedirs(_DEFAULT_LOG_DIR, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            log_path = os.path.join(_DEFAULT_LOG_DIR, f"cli_{ts}.jsonl")
-        logger = ConversationLogger(log_path)
-        console.print(f"[dim]Conversation log: {log_path}[/dim]")
-    
-    # Load conversation log if provided
+    # Session log: always on. Each run = new file with date+time (cli_YYYYMMDD_HHMMSS.jsonl)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if args.log_file:
+        log_path = os.path.abspath(args.log_file)
+        if os.path.isdir(log_path):
+            log_path = os.path.join(log_path, f"cli_{ts}.jsonl")
+    else:
+        os.makedirs(_DEFAULT_LOG_DIR, exist_ok=True)
+        log_path = os.path.join(_DEFAULT_LOG_DIR, f"cli_{ts}.jsonl")
+    logger = ConversationLogger(log_path)
+    console.print(f"[dim]Session log: {log_path}[/dim]")
+
+    # Load only when user passes --load-log (e.g. test_data); then seed this new log file with that history
     if args.load_log:
         assistant.load_conversation_log(args.load_log)
-    
-    # Seed log file with loaded history so the log = loaded + new messages (same source for 20 recent)
-    if logger and assistant.memory_manager.conversation_history:
         logger.seed_from_history(assistant.memory_manager.conversation_history)
     
     # Welcome message
